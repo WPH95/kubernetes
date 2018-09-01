@@ -42,6 +42,7 @@ import (
 	"k8s.io/kubernetes/pkg/volume/util"
 	"k8s.io/kubernetes/pkg/volume/util/recyclerclient"
 	"k8s.io/kubernetes/pkg/volume/util/volumepathhandler"
+	"github.com/pkg/errors"
 )
 
 // fakeVolumeHost is useful for testing volume plugins.
@@ -221,6 +222,9 @@ type FakeVolumePlugin struct {
 	Detachers            []*FakeVolume
 	BlockVolumeMappers   []*FakeVolume
 	BlockVolumeUnmappers []*FakeVolume
+
+	CheckDevicePath     bool
+	DelayUnMountDevice time.Duration
 }
 
 var _ VolumePlugin = &FakeVolumePlugin{}
@@ -231,7 +235,7 @@ var _ ProvisionableVolumePlugin = &FakeVolumePlugin{}
 var _ AttachableVolumePlugin = &FakeVolumePlugin{}
 
 func (plugin *FakeVolumePlugin) getFakeVolume(list *[]*FakeVolume) *FakeVolume {
-	volume := &FakeVolume{}
+	volume := &FakeVolume{Plugin: plugin}
 	*list = append(*list, volume)
 	return volume
 }
@@ -631,6 +635,12 @@ func (fv *FakeVolume) WaitForAttach(spec *Spec, devicePath string, pod *v1.Pod, 
 	fv.Lock()
 	defer fv.Unlock()
 	fv.WaitForAttachCallCount++
+	if fv.Plugin.CheckDevicePath {
+		if devicePath == "" {
+			return "", errors.New("DevicePath is empty")
+		}
+	}
+
 	return "/dev/sdb", nil
 }
 
@@ -660,6 +670,12 @@ func (fv *FakeVolume) GetMountDeviceCallCount() int {
 	return fv.MountDeviceCallCount
 }
 
+func (fv *FakeVolume) GetUnMountDeviceCallCount() int {
+	fv.RLock()
+	defer fv.RUnlock()
+	return fv.UnmountDeviceCallCount
+}
+
 func (fv *FakeVolume) Detach(volumeName string, nodeName types.NodeName) error {
 	fv.Lock()
 	defer fv.Unlock()
@@ -683,6 +699,7 @@ func (fv *FakeVolume) UnmountDevice(globalMountPath string) error {
 	fv.Lock()
 	defer fv.Unlock()
 	fv.UnmountDeviceCallCount++
+	time.Sleep(fv.Plugin.DelayUnMountDevice)
 	return nil
 }
 
@@ -890,6 +907,24 @@ func VerifyMountDeviceCallCount(
 	return fmt.Errorf(
 		"No Attachers have expected MountDeviceCallCount. Expected: <%v>.",
 		expectedMountDeviceCallCount)
+}
+
+// VerifyUnMountDeviceCallCount ensures that at least one of the Mappers for this
+// plugin has the expectedUnMountDeviceCallCount number of calls. Otherwise it returns
+// an error.
+func VerifyUnMountDeviceCallCount(
+	expectedUnMountDeviceCallCount int,
+	fakeVolumePlugin *FakeVolumePlugin) error {
+	for _, mapper := range fakeVolumePlugin.GetDetachers() {
+		actualCallCount := mapper.GetUnMountDeviceCallCount()
+		if actualCallCount == expectedUnMountDeviceCallCount {
+			return nil
+		}
+	}
+
+	return fmt.Errorf(
+		"No Mappers have expected GetUnMountDeviceCallCount. Expected: <%v>.",
+		expectedUnMountDeviceCallCount)
 }
 
 // VerifyZeroMountDeviceCallCount ensures that all Attachers for this plugin
